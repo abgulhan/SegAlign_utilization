@@ -22,6 +22,8 @@ output_filename=""
 mk=0
 hp=0
 total_args=0
+num_threads=$(nproc)
+max_segment_size=0
 
 args=("$@")
 
@@ -33,7 +35,7 @@ for ((i=0; i < $#; i++)){
 split_args=( $optionalArguments1 )
 total_args=${#split_args[@]}
 
-for ((i=2; i < $#; i++)){
+for ((i=3; i < $#; i++)){
   optionalArguments="$optionalArguments ${args[$i]}"
 }
 
@@ -53,6 +55,10 @@ for ((i=0; i < $total_args; i++)){
 
   if [[ "${split_args[$i]}" == *"--help"* ]]; then
     hp=1
+  fi
+
+  if [[ "${split_args[$i]}" == *"--num_threads"* ]]; then
+    num_threads=${split_args[$(($i+1))]}
   fi
 }
 
@@ -109,11 +115,30 @@ else
 
   cd $OUTPUT_FOLDER
 
+  max_segment_size=$3
+
   time {
   count=0
 
-  while IFS= read -r line; do eval "$line" & pids="$pids $!"; count=$((count+1)); while [ $count -gt $(nproc) ]; do count=0; running=""; for pid in $pids; do if ps -p $pid > /dev/null; then count=$((count+1)); running="$running $pid"; fi; done; pids=$running; done; done < <(stdbuf -oL segalign $refPath $queryPath $DATA_FOLDER $optionalArguments )
-    wait $pids || let "FAIL+=1"
+  while IFS= read -r line_; do 
+    while IFS= read -r line; do
+      eval "$line" & pids="$pids $!"; 
+      count=$((count+1)); 
+      while [ $count -ge $(nproc) ]; do 
+        count=0; running=""; 
+        for pid in $pids; do 
+          if ps -p $pid > /dev/null; 
+            then count=$((count+1)); 
+            running="$running $pid"; 
+          fi; 
+        done; 
+        pids=$running; 
+      done; 
+    done < <(stdbuf -oL diagonal_partition $max_segment_size $line_)
+  done < <(stdbuf -oL segalign $refPath $queryPath $DATA_FOLDER $optionalArguments )
+    
+    
+  wait $pids || let "FAIL+=1"
   }
 
   rm -rf $DATA_FOLDER
@@ -195,3 +220,6 @@ else
 
   rm -rf $OUTPUT_FOLDER
 fi
+
+
+
