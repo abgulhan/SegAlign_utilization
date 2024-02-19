@@ -4,7 +4,7 @@
 Diagonal partitioning for segment files output by SegAlign.
 
 Usage:
-segalign_sort.py <max-segments> <lastz-command>
+diagonal_partition.py <max-segments> <lastz-command>
 '''
 
 
@@ -18,7 +18,7 @@ def chunks(lst, n):
 
 if __name__ == "__main__":
 
-    DELETE_AFTER_CHUNKING = False
+    DELETE_AFTER_CHUNKING = True
 
     #input_params = "10000 sad sadsa sad --segments=tmp10.block5.r1239937044.plus.segments dsa sa --strand=plus --output=out.maf sadads 2> logging.err"
     #sys.argv = [sys.argv[0]] + input_params.split(' ')
