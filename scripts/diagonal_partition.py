@@ -1,30 +1,39 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.8
 
 '''
 Diagonal partitioning for segment files output by SegAlign.
 
 Usage:
 diagonal_partition.py <max-segments> <lastz-command>
+
+set <max-segments> = 0 to skip partitioning, -1 to infer best parameter
 '''
 
 
 import sys
 import os
 
+
 def chunks(lst, n):
     """Yield successive n-sized chunks from list."""
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
+
 if __name__ == "__main__":
 
     DELETE_AFTER_CHUNKING = True
+    MIN_CHUNK_SIZE = 5000 # don't partition segment files with line count below this value
 
-    #input_params = "10000 sad sadsa sad --segments=tmp10.block5.r1239937044.plus.segments dsa sa --strand=plus --output=out.maf sadads 2> logging.err"
+    #input_params = "10000 sad sadsa sad --segments=tmp21.block0.r0.minus.segments dsa sa --strand=plus --output=out.maf sadads 2> logging.err"
     #sys.argv = [sys.argv[0]] + input_params.split(' ')
     chunk_size = int(sys.argv[1]) # first parameter contains chunk size
     params = sys.argv[2:]
 
+    # don't do anything if 0 chunk size
+    if chunk_size == 0:
+        print(' '.join(params), flush=True)
+        exit(0)
 
     # Parsing command output from SegAlign
     segment_key = "--segments="
@@ -44,7 +53,40 @@ if __name__ == "__main__":
         print(f"Error: File {input_file} does not exist")
         exit(0)
 
-    if chunk_size == 0 or sum(1 for _ in open(input_file)) <= chunk_size: # no need to sort if number of lines <= chunk_size
+    line_size = None # each char in 1 byte
+    file_size = os.path.getsize(input_file)
+    with open(input_file, 'r') as f:
+        line_size = len(f.readline()) # add 1 for newline
+
+    estimated_lines = file_size//line_size
+
+
+    # check if chunk size should be estimated
+    if chunk_size < 0:
+        # optimization, do not need to get each file size in this case
+        if estimated_lines < MIN_CHUNK_SIZE:
+            print(' '.join(params), flush=True)
+            exit(0)
+        
+        from collections import defaultdict
+        from statistics import quantiles
+        # get size of each segment assuming DELETE_AFTER_CHUNKING == True
+        # takes into account already split segments
+        files = [i for i in os.listdir('.') if i.endswith('.segments')]
+        ## find . -maxdepth 1 -name "*.segments" -print0 | du -ba --files0-from=-
+        # if not enough segment files for estimation, continue
+        if len(files) <= 2:
+            print(' '.join(params), flush=True)
+            exit(0)
+        
+        fdict = defaultdict(int)
+        for f in files:
+            size = os.path.getsize(f)
+            f_ = f.split('.split', 1)[0]
+            fdict[f_] += size
+        chunk_size = int(quantiles(fdict.values())[-1] // line_size)
+        
+    if file_size//line_size <= chunk_size: # no need to sort if number of lines <= chunk_size
         print(' '.join(params), flush=True)
         exit(0)
 
@@ -103,12 +145,19 @@ if __name__ == "__main__":
     # It is better to keep these pairs in a single segment file. 
     skip_pairs = [] # pairs that have count <= chunk_size.
                     # these will not be sorted
+                    
+    # save query key order
+    # for lastz segment files: 'Query sequence names must appear in the same 
+    # order as they do in the query file'
+    query_key_order = list(dict.fromkeys([i[1] for i in data.keys()]))                
+
+    # NOTE: assuming data.keys() preserves order of keys. Requires Python 3.7+
+
     if len(data.keys()) > 1:
         for pair in data.keys():
             if len(data[pair]) <= chunk_size:
                 skip_pairs.append(pair)
-        
-        
+
     # sorting for forward segments
     if direction == 'r':
         for pair in data.keys():
@@ -125,12 +174,13 @@ if __name__ == "__main__":
 
     # Writing file in chunks
     ctr = 0
-    for pair in data.keys()-skip_pairs:
+    for pair in data.keys()-skip_pairs: #[i for i in data_keys if i not in set(skip_pairs)]:
         for chunk in chunks(list(zip(*data[pair]))[2], chunk_size):
             ctr += 1
             name_addition = f".split{ctr}"
             fname = input_file.split('.segments', 1)[0] + name_addition + '.segments'
             
+            assert(len(chunk) != 0)
             with open(fname, 'w') as f:
                 f.writelines(chunk)
             # update segment file in command
@@ -144,6 +194,10 @@ if __name__ == "__main__":
     # writing unsorted skipped pairs
     if len(skip_pairs) > 0:
         skip_pairs_with_len = sorted([(len(data[p]), p) for p in skip_pairs]) # list of tuples of (pair length, pair)
+        # NOTE: This can violate lastz query key order requirement
+        
+        query_key_order_table = { item: idx for idx, item in enumerate(query_key_order) } # used for sorting
+        
         aggregated_skip_pairs = [] # list of list of pair names
         current_count = 0
         aggregated_skip_pairs.append([])
@@ -155,13 +209,15 @@ if __name__ == "__main__":
                 aggregated_skip_pairs.append([])
                 current_count = count
                 aggregated_skip_pairs[-1].append(pair)
-                
+               
         for aggregate in aggregated_skip_pairs:
                 ctr += 1
                 name_addition = f".split{ctr}"
                 fname = input_file.split('.segments', 1)[0] + name_addition + '.segments'
+                
                 with open(fname, 'w') as f:
-                    for pair in sorted(aggregate, key=lambda p: (p[1], p[0])):
+                    # fix possible lastz query key order violations
+                    for pair in sorted(aggregate, key=lambda p: query_key_order_table[p[1]]): # p[1] is query key
                         chunk = list(zip(*data[pair]))[2]
                         f.writelines(chunk)
                 # update segment file in command
@@ -171,6 +227,6 @@ if __name__ == "__main__":
                 # update error file in command
                 params[-1] = err_name_base + name_addition + '.err'
                 print(' '.join(params), flush=True)    
-        
+            
     if DELETE_AFTER_CHUNKING:  
         os.remove(input_file)
